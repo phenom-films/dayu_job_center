@@ -9,71 +9,96 @@ import time
 import random
 import threading
 from util import tprint
-
-
+from worker import LocalAsyncWorker
+import json
 
 
 class LocalAsyncServer(object):
-    def __init__(self, port=18765, worker=4):
-        self.port = port
-        self.worker = worker
+    def __init__(self, worker=4):
+        self.worker_count = worker
+        self.worker_threads = {}
+        self.job_list = [{'worker_id'     : None,
+                          'op'            : 'data',
+                          'job_id'        : 'job_{}'.format(x),
+                          'status'        : None,
+                          'data'          : x,
+                          'message'       : None,
+                          'start_time'    : None,
+                          'elapse_time'   : None,
+                          'remaining_time': None,
+                          'progress'      : 0.0} for x in range(12)]
+        self.running_list = []
+        self.done_list = []
+        self.is_running = False
+
+    def resume(self, index):
+        if self.is_running is False:
+            return
+        # print self.running_list[index]
+        worker_id = self.running_list[index]['worker_id']
+        self.control_socket.send('{}_RESUME'.format(worker_id))
+
+    def pause(self, index):
+        if self.is_running is False:
+            return
+        # print self.running_list[index]
+        worker_id = self.running_list[index]['worker_id']
+        self.control_socket.send('{}_PAUSE'.format(worker_id))
+
+    def _update_job_info(self, obj):
+        job_id_list = [x['job_id'] for x in self.running_list]
+        job_index = job_id_list.index(obj['job_id'])
+        self.running_list[job_index].update(obj)
+        return job_index
 
     def run(self):
-        from worker import LocalAsyncWorker
+        self.context = zmq.Context.instance()
+        self.data_socket = self.context.socket(zmq.ROUTER)
+        self.data_socket.bind('inproc://backend')
+        self.control_socket = self.context.socket(zmq.PUB)
+        self.control_socket.bind('inproc://worker_control')
 
-        # 配置socket
-        context = zmq.Context.instance()
-        front_end = context.socket(zmq.ROUTER)
-        front_end.bind('tcp://*:{}'.format(self.port))
-        back_end = context.socket(zmq.DEALER)
-        back_end.bind('inproc://dayu_local_async_server')
+        self.is_running = True
+        for x in range(self.worker_count):
+            w = LocalAsyncWorker(x)
+            t = threading.Thread(target=w.run)
+            self.worker_threads[w.identity] = t
+            t.start()
+        tprint('==== start worker thread ====')
 
-        # 启动worker 线程
-        for x in range(self.worker):
-            worker = LocalAsyncWorker(x)
-            tt = threading.Thread(target=worker.run)
-            tt.start()
+        available_worker = []
+        while len(available_worker) < self.worker_count:
+            message = self.data_socket.recv_multipart()
+            tprint(message)
+            if message[-1] == 'WORKER_READY':
+                available_worker.append(message[0])
+        tprint('==== all worker thread ready ====')
 
-        # 创建poller，并注册socket
-        poller = zmq.Poller()
-        poller.register(front_end, zmq.POLLIN)
-        poller.register(back_end, zmq.POLLIN)
+        while self.job_list or self.running_list:
+            print '---------------'
+            while available_worker and self.job_list:
+                assign_job = self.job_list.pop(0)
+                assign_worker = available_worker.pop(0)
+                assign_job['worker_id'] = assign_worker
+                self.running_list.append(assign_job)
+                self.data_socket.send_multipart([assign_worker, json.dumps(assign_job)])
 
-        while True:
-            sockets = dict(poller.poll(500))
-            if front_end in sockets:
-                message = front_end.recv_multipart()
-                client_address = message[0]
+            message = self.data_socket.recv_multipart()
+            obj = json.loads(message[-1])
+            job_index = self._update_job_info(obj)
 
-                # 如果前端传入的消息 == DAYU_KILL, 那么表示需要退出
-                if message[-1] == 'DAYU_KILL':
-                    # 发送和worker 数量相同的DAYU_KILL 信号
-                    for x in range(self.worker):
-                        back_end.send_multipart([client_address, 'DAYU_KILL'])
+            if obj['status'] == 'DAYU_FINISH':
+                available_worker.append(message[0])
+                self.done_list.append(self.running_list.pop(job_index))
 
-                    exit_workers = 0
-                    # 等待接收worker 正常退出时候，返回的 DAYU_WORKER_EXIT 信号
-                    while exit_workers < self.worker:
-                        replay_message = back_end.recv_multipart()
-                        # 接收到的worker 消息，可能是正常退出的信号，也可能是之前没有完成任务的消息，需要分开处理
-                        if replay_message[-1] == 'DAYU_WORKER_EXIT':
-                            tprint(str(replay_message))
-                            exit_workers += 1
-                        else:
-                            front_end.send_multipart(replay_message)
+            print [(x['job_id'], x['status']) for x in self.running_list]
 
-                    # 接收到所有worker 都返回正常的退出信号后，向client 发送整个server 退出的信号
-                    front_end.send_multipart([client_address, 'DAYU_SERVER_EXIT'])
-                    break
-                else:
-                    back_end.send_multipart(message)
-
-            # 正常的后端进度信号，向前端传递
-            if back_end in sockets:
-                front_end.send_multipart(back_end.recv_multipart())
-
-        # 给client 一点点时间反应
-        time.sleep(0.1)
+        for w in self.worker_threads:
+            self.control_socket.send('{}_KILL'.format(w))
+        self.is_running = False
+        print 'exit'
+        for t in self.worker_threads:
+            print self.worker_threads[t].is_alive()
 
 
 if __name__ == '__main__':

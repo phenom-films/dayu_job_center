@@ -7,6 +7,6 @@ import sys
 
 def tprint(msg):
     """like print, but won't get newlines confused with multiple threads"""
-    sys.stdout.write(msg + '\n')
+    sys.stdout.write(str(msg) + '\n')
     sys.stdout.flush()
 
