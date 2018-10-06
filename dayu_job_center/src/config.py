@@ -1,0 +1,18 @@
+#!/usr/bin/env python
+# -*- encoding: utf-8 -*-
+
+__author__ = 'andyguo'
+
+DATETIME_FORMATTER = '%Y-%m-%d %H:%M:%S'
+
+WORKER_IDLE = b'WORKER_IDLE'
+WORKER_EXIT = b'WORKER_EXIT'
+
+JOB_READY = b'JOB_READY'
+JOB_RUNNING = b'JOB_RUNNING'
+JOB_FINISHED = b'JOB_FINISHED'
+JOB_ERROR = b'JOB_ERROR'
+JOB_UNKNOWN = b'JOB_UNKNOWN'
+JOB_PAUSE = b'JOB_PAUSE'
+JOB_RESUME = b'JOB_RESUME'
+JOB_STOP = b'JOB_STOP'
