@@ -9,7 +9,7 @@ from config import *
 
 
 class SubmissionBase(object):
-    total = 1
+    total = 1.0
     start_time = None
     progress = 0.0
     status = None
@@ -19,10 +19,11 @@ class SubmissionBase(object):
         self.total = total
 
     def setup(self):
-        pass
+        self.start_time = datetime.datetime.now()
+        self.progress = 0.0
 
     def update_status(self, current):
-        raise NotImplementedError
+        self.progress = current / self.total
 
     def start(self):
         raise NotImplementedError
@@ -31,19 +32,34 @@ class SubmissionBase(object):
         raise NotImplementedError
 
 
+class CopySubmission(SubmissionBase):
+    def start(self):
+        from unipath import Path
+        self.setup()
+        self.status = JOB_RUNNING
+
+        current = 0.0
+        from_files = self.cmd.get('from_files', [])
+        to_files = self.cmd.get('to_files', [])
+        for file_pair in zip(from_files, to_files):
+            self.update_status(current)
+            yield
+
+            from_file = Path(file_pair[0])
+            to_file = Path(file_pair[1])
+            to_files.parent.mkdir(parents=True)
+            from_file.copy(to_file)
+            current += 1
+        else:
+            self.status = JOB_FINISHED
+            yield
+
+
 class TestSubmission(SubmissionBase):
     pass
 
 
 class RandomSleepSubmission(TestSubmission):
-    def setup(self):
-        super(RandomSleepSubmission, self).setup()
-        self.start_time = datetime.datetime.now()
-        self.progress = 0.0
-
-    def update_status(self, current):
-        self.progress = current / self.total
-
     def start(self):
         import random
         import time
@@ -52,9 +68,9 @@ class RandomSleepSubmission(TestSubmission):
         self.status = JOB_RUNNING
         current = 0.0
         while current <= self.total:
-            time.sleep(random.random())
-            yield
-            current += 1
             self.update_status(current)
+            yield
+            time.sleep(random.random())
+            current += 1
 
         self.status = JOB_FINISHED
