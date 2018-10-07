@@ -6,3 +6,7 @@ __author__ = 'andyguo'
 
 class WorkerExitError(KeyboardInterrupt):
     pass
+
+
+class JobStopError(KeyboardInterrupt):
+    pass
