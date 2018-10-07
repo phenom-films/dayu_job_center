@@ -10,7 +10,7 @@ import threading
 import zmq
 
 from config import *
-from util import tprint
+from util import tprint, recursive_update
 from worker import LocalAsyncWorker
 
 
@@ -51,49 +51,64 @@ class ServerBase(object):
 class LocalAsyncServer(ServerBase):
     def __init__(self, worker=4):
         self.worker_count = worker
-        self.waiting_jobs = [{'name'                 : None,
-                              'label'                : None,
-                              'job_id'               : 'job_{}'.format(x),
-                              'worker_id'            : None,
-                              'submission_type'      : 'RandomSleepSubmission',
-                              'status'               : JOB_READY,
-                              'job_data'             : x,
-                              'job_total'            : 3,
-                              'message'              : None,
-                              'start_time'           : None,
-                              'elapse_time'          : '0:00:00',
-                              'remaining_time'       : '0:00:00',
-                              'progress'             : 0.0,
-                              'before_start_callback': {'func': None, 'args': None, 'kwargs': None},
-                              'after_finish_callback': {'func': None, 'args': None, 'kwargs': None}}
-                             for x in range(10)]
+        self.waiting_jobs = []
+        # self.waiting_jobs = [{'name'                 : u'哈哈',
+        #                       'label'                : None,
+        #                       'job_id'               : b'job_{}'.format(x),
+        #                       'worker_id'            : None,
+        #                       'submission_type'      : 'RandomSleepSubmission',
+        #                       'status'               : JOB_READY,
+        #                       'job_data'             : x,
+        #                       'job_total'            : 3,
+        #                       'message'              : None,
+        #                       'start_time'           : None,
+        #                       'elapse_time'          : '0:00:00',
+        #                       'remaining_time'       : '0:00:00',
+        #                       'progress'             : 0.0,
+        #                       'before_start_callback': {'func': None, 'args': None, 'kwargs': None},
+        #                       'after_finish_callback': {'func': None, 'args': None, 'kwargs': None}}
+        #                      for x in range(12)]
         self.running_jobs = []
         self.finished_jobs = []
         self.is_running = False
         self.context = zmq.Context.instance()
 
+    def add_job(self, job):
+        self.waiting_jobs.append(job)
+
+    def add_job_group(self, job_group):
+        self.waiting_jobs.append(job_group)
+
     def resume(self, running_job_index):
         if self.is_running is False:
             return
-        # print self.running_list[index]
-        worker_id = self.running_jobs[running_job_index]['worker_id']
-        self.control_socket.send_multipart([worker_id, JOB_PAUSE])
+        worker_id = self.running_jobs[running_job_index]['worker_id'].encode('ascii')
+        self.control_socket.send_multipart([worker_id, JOB_RESUME])
 
     def pause(self, running_job_index):
         if self.is_running is False:
             return
-        # print self.running_list[index]
-        worker_id = self.running_jobs[running_job_index]['worker_id']
-        self.control_socket.send_multipart([worker_id, JOB_RESUME])
+        worker_id = self.running_jobs[running_job_index]['worker_id'].encode('ascii')
+        self.control_socket.send_multipart([worker_id, JOB_PAUSE])
 
     def abort(self, running_job_index):
-        pass
+        worker_id = self.running_jobs[running_job_index]['worker_id'].encode('ascii')
+        self.control_socket.send_multipart([worker_id, JOB_STOP])
 
     def stop(self):
-
         for w in self.workers:
             self.control_socket.send_multipart([w, WORKER_EXIT])
+
+        exit_worker_count = 0
+        while exit_worker_count < self.worker_count:
+            message = self.control_socket.recv_multipart()
+            if message[-1] == WORKER_EXIT:
+                exit_worker_count += 1
+
         self.is_running = False
+        self.job_socket.close()
+        self.control_socket.close()
+        self.context.term()
         print 'server stop!'
         # for t in self.worker_threads:
         #     print self.worker_threads[t].is_alive()
@@ -139,26 +154,35 @@ class LocalAsyncServer(ServerBase):
             func(*self.workers[worker_id]['before_start_callback']['args'],
                  **self.workers[worker_id]['before_start_callback']['kwargs'])
 
+    def update_time(self, job):
+        _progress = job['progress']
+        if _progress != 0:
+            _delta = datetime.datetime.now() - datetime.datetime.strptime(job['start_time'], DATETIME_FORMATTER)
+            job['elapse_time'] = str(_delta).split('.')[0]
+            job['remaining_time'] = \
+                str(datetime.timedelta(seconds=_delta.total_seconds() * (1.0 - _progress) / _progress)).split('.')[0]
+
     def update_jobs(self):
         message = self.job_socket.recv_multipart()
         job = json.loads(message[-1])
         job_id_list = [x['job_id'] for x in self.running_jobs]
         job_index = job_id_list.index(job['job_id'])
-        self.running_jobs[job_index].update(job)
+        recursive_update(self.running_jobs[job_index], (job))
 
         for j in self.running_jobs:
-            _progress = j['progress']
-            if _progress != 0:
-                _delta = datetime.datetime.now() - datetime.datetime.strptime(j['start_time'], DATETIME_FORMATTER)
-                j['elapse_time'] = str(_delta).split('.')[0]
-                j['remaining_time'] = \
-                    str(datetime.timedelta(seconds=_delta.total_seconds() * (1.0 - _progress) / _progress)).split('.')[
-                        0]
+            self.update_time(j)
+            if j.has_key('children_jobs'):
+                for single_job in j['children_jobs']:
+                    self.update_time(single_job)
 
         if job['status'] == JOB_FINISHED:
             worker_id = job['worker_id']
             self.after_finish(job, worker_id)
 
+            self.available_workers.append(message[0])
+            self.finished_jobs.append(self.running_jobs.pop(job_index))
+
+        if job['status'] in (JOB_ERROR, JOB_UNKNOWN, JOB_STOP):
             self.available_workers.append(message[0])
             self.finished_jobs.append(self.running_jobs.pop(job_index))
 
@@ -169,6 +193,7 @@ class LocalAsyncServer(ServerBase):
                  **self.workers[worker_id]['after_finish_callback']['kwargs'])
 
     def start(self):
+        from pprint import pprint
         self.is_running = True
         self.setup_connection()
         self.spawn_workers()
@@ -181,12 +206,25 @@ class LocalAsyncServer(ServerBase):
             self.update_jobs()
 
             print '---------------'
-            print [(x['job_id'], x['progress'], x['start_time'], x['elapse_time'], x['remaining_time']) for x in
-                   self.running_jobs]
+            pprint(self.running_jobs)
+            # print [(x['job_id'], x['progress']) for x in self.running_jobs]
 
         self.stop()
 
 
 if __name__ == '__main__':
+    from job import *
+
+    a = Job(job_total=3, submission_type='RandomSleepSubmission')
+    b = Job(job_total=3, submission_type='RandomSleepSubmission')
+    c = Job(job_total=3, submission_type='RandomSleepSubmission')
+
+    jg = JobGroup()
+    jg.add_job(a)
+    jg.add_job(b)
+    jg.add_job(c)
+
     server = LocalAsyncServer()
+    server.add_job_group(jg)
     server.start()
+    print server.finished_jobs
