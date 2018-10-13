@@ -12,16 +12,21 @@ class Job(dict):
                        'job_data', 'job_total', 'message', 'start_time', 'elapse_time', 'remaining_time',
                        'progress', 'before_start_callback', 'after_finish_callback')
 
-    def __init__(self, **kwargs):
+    def __init__(self,
+                 name=None,
+                 submission_type=None,
+                 job_data=None,
+                 job_total=None,
+                 **kwargs):
         super(Job, self).__init__(**kwargs)
-        self['name'] = kwargs.get('name', None)
-        self['label'] = kwargs.get('label', None)
+        self['name'] = name or kwargs.get('name', None)
+        self['label'] = kwargs.get('label', self['name'])
         self['job_id'] = kwargs.get('job_id', 'job_{}'.format(uuid.uuid4().hex))
         self['worker_id'] = kwargs.get('worker_id', None)
-        self['submission_type'] = kwargs.get('submission_type', None)
+        self['submission_type'] = submission_type or kwargs.get('submission_type', None)
         self['status'] = kwargs.get('status', JOB_READY)
-        self['job_data'] = kwargs.get('job_data', None)
-        self['job_total'] = kwargs.get('job_total', 1.0)
+        self['job_data'] = job_data or kwargs.get('job_data', None)
+        self['job_total'] = job_total or kwargs.get('job_total', 1.0)
         self['message'] = kwargs.get('message', None)
         self['start_time'] = kwargs.get('start_time', None)
         self['elapse_time'] = kwargs.get('elapse_time', '0:00:00')
@@ -48,10 +53,12 @@ class Job(dict):
 
 
 class JobGroup(dict):
-    def __init__(self, **kwargs):
+    def __init__(self,
+                 name=None,
+                 **kwargs):
         super(JobGroup, self).__init__(**kwargs)
-        self['name'] = kwargs.get('name', None)
-        self['label'] = kwargs.get('label', None)
+        self['name'] = name or kwargs.get('name', None)
+        self['label'] = kwargs.get('label', self['name'])
         self['job_id'] = kwargs.get('job_id', 'job_{}'.format(uuid.uuid4().hex))
         self['worker_id'] = kwargs.get('worker_id', None)
         self['submission_type'] = kwargs.get('submission_type', None)
