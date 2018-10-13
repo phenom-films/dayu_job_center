@@ -4,6 +4,7 @@
 __author__ = 'andyguo'
 
 import json
+import os
 
 import zmq
 
@@ -24,6 +25,20 @@ class WorkerBase(object):
             identity = uuid.uuid4().hex
         self.identity = b'{}_{}'.format(self.worker_type, identity)
         self.context = zmq.Context.instance()
+        self.load_submissions()
+
+    def load_submissions(self):
+        custom_submission_path = os.environ.get(DAYU_JOB_CENTER_SUBMISSION_FILE, None)
+        if custom_submission_path:
+            import imp
+            submission_module = imp.load_source('submission', custom_submission_path)
+
+        else:
+            print 'read built-in submission'
+            import importlib
+            submission_module = importlib.import_module('submission')
+
+        globals()['submission'] = submission_module
 
     def setup_connection(self):
         raise NotImplementedError
@@ -54,7 +69,11 @@ class WorkerBase(object):
         single_job['progress'] = self.current_submission.progress
 
     def job_to_submission(self, job):
-        raise NotImplementedError
+        submission_class = getattr(globals()['submission'], job['submission_type'])
+        job_data = job.pop('job_data')
+        job_total = job.pop('job_total')
+        instance = submission_class(job_data, job_total)
+        return instance
 
     def check_control_signal(self):
         raise NotImplementedError
@@ -96,15 +115,6 @@ class LocalAsyncWorker(WorkerBase):
                         raise WorkerExitError()
                     if waiting_signal == JOB_RESUME:
                         break
-
-    def job_to_submission(self, job, submission_class=None):
-        if submission_class is None:
-            import submission
-            submission_class = getattr(submission, job['submission_type'])
-        job_data = job.pop('job_data')
-        job_total = job.pop('job_total')
-        instance = submission_class(job_data, job_total)
-        return instance
 
     def stop(self):
         self.control_socket.send(WORKER_EXIT)
